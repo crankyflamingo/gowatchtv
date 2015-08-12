@@ -44,8 +44,7 @@ func updateAddressCache(r *dns.Msg) {
 
 	if ip == "" {
 		fmt.Println("Cannot updated map, no IP found")
-		fmt.Println(u.String())
-		fmt.Println("")
+		fmt.Println(u.String(), "\n")
 		return
 	}
 
@@ -98,7 +97,7 @@ func upstreamLookup(r *dns.Msg) (u *dns.Msg, err error) {
 func matchesCriteria(name string) bool {
 	for _, intercept := range config.INTERCEPTS {
 		if strings.Contains(strings.ToLower(name), intercept) {
-			fmt.Printf("%s matches criteria\n", name)
+			//fmt.Printf("%s matches criteria\n", name)
 			return true
 		}
 	}

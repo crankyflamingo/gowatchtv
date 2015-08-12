@@ -11,6 +11,7 @@ type Configuration struct {
 	EXTERNAL_ADDRESS string
 	DNS_PORT         string
 	INTERCEPTS       []string
+	DEBUG            bool
 }
 
 // Implements the configuration loading

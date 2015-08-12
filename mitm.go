@@ -18,7 +18,6 @@ type TemporalCache struct {
 }
 
 var mutex = new(sync.Mutex)
-var hostRegex = regexp.MustCompile("Host\\:\\s+(.*?)\\s*$")
 var cacheTrimRunning = false
 var clientCache = map[string]*TemporalCache{}
 
@@ -32,8 +31,9 @@ func shuttleData(src, dst net.Conn) {
 		rlen, err := src.Read(buf)
 		if err == nil && rlen > 0 {
 			dst.Write(buf[:rlen])
+		} else {
+			break
 		}
-		break
 	}
 }
 
@@ -54,38 +54,76 @@ func updateClientCache(client string, ip string) {
 }
 
 func trimClientCache() {
-	// TODO: check the age of the entry and remove ones older than cacheExpiry
+	for {
+		time.Sleep(30 * time.Minute)
+		fmt.Println("Flushing old cached client entries (", len(clientCache), " total )")
 
+		mutex.Lock()
+		for client, temp := range clientCache {
+			if time.Since(temp.set) > cacheExpiry {
+				delete(clientCache, client)
+			}
+		}
+		mutex.Unlock()
+	}
+}
+
+var httpHost = regexp.MustCompile("Host:\\s([^\\r]+)")
+var httpsHost = regexp.MustCompile("\x00\x00.([\\w\\.\\-\\_]{10,50})\x00")
+
+func extractHostFromRequest(data *string) (host string) {
+	// we either get a HTTP connection so the host looks like:
+	// Host: www.blah.com\x0d\x0a
+	// or HTTPS where the host looks like:
+	// <len byte>www.blah.com\x00
+	if !matchesCriteria(*data) {
+		//fmt.Println("Doesn't match criteria")
+		return ""
+	}
+	matches := httpHost.FindStringSubmatch(*data)
+	if matches != nil {
+		//fmt.Printf("matches http: %s", strings.Join(matches, ","))
+		return matches[1]
+	}
+	matches = httpsHost.FindStringSubmatch(*data)
+	if matches != nil {
+		//fmt.Printf("matches http: %s", strings.Join(matches, ","))
+		return matches[1]
+	}
+	return ""
 }
 
 func handleConnection(src net.Conn, port string) {
 
+	fmt.Println("\nConnection on port", port)
+
 	buf := make([]byte, 512)
+	host := ""
+	ip := ""
+
 	rlen, err := src.Read(buf)
 	if err != nil {
 		src.Close()
 		return
 	}
+	data := string(buf)
 
-	data := string(buf[:rlen])
-	ip := ""
-
-	// check the destination is one we know about
-	host := hostRegex.FindString(data)
+	host = extractHostFromRequest(&data)
+	//dataDump(buf)
 
 	// We've found a hostname
 	if host != "" {
-		// see if we've looked it up before
-		if inAddressCache(host) || inAddressCache(host+".") {
-			fmt.Println("Request to", host, "in our cache")
-			ip = getCachedIp(host)
-		} else if matchesCriteria(host) {
-			// check if it matches our criteria, if so we might be dealing with a cached dns entry
-			// so we'll have to look up the address again
-			fmt.Println("Request to", host, "was not in cache, updating it")
+		// check if it matches our criteria, if so we might be dealing with a cached dns entry
+		// so we'll have to look up the address again
+		if !inAddressCache(host) {
 			updateCacheByName(host)
-			ip = getCachedIp(host)
 		}
+		ip = getCachedIp(host)
+	} else if !matchesCriteria(data) {
+		// otherwise it's an unwanted connection
+		fmt.Printf("Request to unknown host dropping")
+		src.Close()
+		return
 	}
 
 	// There was no match, see if we've seen the client before. This may happen when we get sessions that don't
@@ -107,6 +145,7 @@ func handleConnection(src net.Conn, port string) {
 	updateClientCache(src.RemoteAddr().String(), ip)
 
 	// connect to intended recipient, shuttle data between client and intended host
+	fmt.Printf("MITMing: Host: %s, IP: %s, Port: %s\n", host, ip, port)
 	dst, err := net.Dial("tcp", ip+port)
 	if err != nil {
 		fmt.Println("Unable to contact intended IP", host, src.RemoteAddr().String(), ip, err.Error())
@@ -123,8 +162,8 @@ func handleConnection(src net.Conn, port string) {
 		return
 	}
 
-	go shuttleData(src, dst)
 	go shuttleData(dst, src)
+	go shuttleData(src, dst)
 }
 
 // MitmServer listens on a given port and shuttles traffic (usually HTTP/HTTPS from client to intended destination)
