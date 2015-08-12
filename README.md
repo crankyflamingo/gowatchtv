@@ -9,9 +9,15 @@ Basic setup is to run this in a cloud instance in the country/region you want to
 Uses a configuration file to determine which sites to proxy:
 e.g.
 
+
 {
+
 	"UPSTREAM_DNS": "208.67.222.222:53",  // OPENDNS
+	
 	"EXTERNAL_ADDRESS": "1.2.3.4",  // This is the external address of your cloud instance
+	
 	"DNS_PORT": ":53",  // This is the DNS server port (only change if you're forwarding from local DNS server)
+	
 	"INTERCEPTS": [".netflix.com", ".hulu.com"] // add to these as appropriate. Not tested on all TV providers.
+	
 }
