@@ -11,8 +11,6 @@ import (
 )
 
 var addressRegex = regexp.MustCompile("([\\d]{1,3}\\.[\\d]{1,3}\\.[\\d]{1,3}\\.[\\d]{1,3})$")
-var hostRegex = regexp.MustCompile("Host\\:\\s+(.*?)\\s*$")
-
 var addressMap = map[string]string{}
 var chanlock = make(chan int, 1)
 
@@ -26,9 +24,6 @@ func updateAddressCache(r *dns.Msg) {
 		fmt.Println("Network error: Cannnot lookup upstream!", err.Error())
 		return
 	}
-
-	//fmt.Println("Upstream lookup returned")
-	//fmt.Println(u.String())
 
 	// find all A records, save the name and address, replace the address and ttl
 	names := []string{}
@@ -64,6 +59,8 @@ func updateAddressCache(r *dns.Msg) {
 	chanlock <- 1
 }
 
+// refreshCache periodically runs and updates DNS entries for all names in the cache (since they often
+// change)
 func refreshCache() {
 	for {
 		keys := []string{}
@@ -80,6 +77,7 @@ func refreshCache() {
 	}
 }
 
+// upstreamLookup sends a dns.Msg to an upstream DNS provider for a legitimate return
 func upstreamLookup(r *dns.Msg) (u *dns.Msg, err error) {
 	c, err := net.Dial("udp", config.UPSTREAM_DNS)
 	if err != nil {
@@ -88,10 +86,7 @@ func upstreamLookup(r *dns.Msg) (u *dns.Msg, err error) {
 	}
 	defer c.Close()
 
-	//m := new(dns.Msg)
-	//m.SetQuestion(name, dns.TypeA) // dns.TypeA
-	co := &dns.Conn{Conn: c} // c is your net.Conn
-	//r, err := dns.Exchange(m, upstreamAddr)
+	co := &dns.Conn{Conn: c}
 	if err = co.WriteMsg(r); err != nil {
 		fmt.Println("Can't write to upstream", err.Error())
 		return r, err
@@ -99,7 +94,7 @@ func upstreamLookup(r *dns.Msg) (u *dns.Msg, err error) {
 	return co.ReadMsg()
 }
 
-// matchesCriteria checks to see if the dns.Msg request is one we want to intercept
+// matchesCriteria checks to see if the name request is one we want to intercept
 func matchesCriteria(name string) bool {
 	for _, intercept := range config.INTERCEPTS {
 		if strings.Contains(strings.ToLower(name), intercept) {
@@ -110,6 +105,8 @@ func matchesCriteria(name string) bool {
 	return false
 }
 
+// hijackResponse retuns a modified version on the input dns.Msg with the A record modified
+// to point to our server
 func hijackResponse(r *dns.Msg) (m *dns.Msg) {
 	m = new(dns.Msg)
 	m.SetReply(r)
@@ -122,30 +119,41 @@ func hijackResponse(r *dns.Msg) (m *dns.Msg) {
 	return m
 }
 
+// inAddressCache returns whether a domain is in the cache
 func inAddressCache(name string) bool {
 	return addressMap[name] != ""
 }
 
-// This gets called upon a DNS request
+func getCachedIp(name string) string {
+	if addressMap[name] == "" {
+		if addressMap[name+"."] == "" {
+			return ""
+		}
+		return addressMap[name+"."]
+	} else {
+		return addressMap[name]
+	}
+}
+
+// interceptRequest gets called upon each DNS request, and we determine
+// whether we want to deal with it or not
 func interceptRequest(w dns.ResponseWriter, r *dns.Msg) {
 	m := r
 	err := error(nil)
 	defer w.Close()
-	// If I want to intercept it
 	if len(r.Question) < 1 {
 		return
 	}
 
-	//fmt.Println("Header", r.MsgHdr.String())
-
+	// Hijack the response to point to us instead
 	if matchesCriteria(r.Question[0].Name) {
-		// Hijack the response to point to us instead
 		if !(inAddressCache(r.Question[0].Name)) {
 			updateAddressCache(r)
 		}
 		m = hijackResponse(r)
-	} else {
+
 		// Pass it upstream, return the answer
+	} else {
 		fmt.Println("Passing on ", r.Question[0].Name)
 		m, err = upstreamLookup(r)
 		if err != nil {
@@ -155,9 +163,19 @@ func interceptRequest(w dns.ResponseWriter, r *dns.Msg) {
 	w.WriteMsg(m)
 }
 
-// Server is the main exported method to run the dns server
+// updateCacheByName updates the cache entry for the FQDN name
+func updateCacheByName(name string) {
+	name = dns.Fqdn(name)
+	fmt.Println("Updating entry for", name)
+	m := new(dns.Msg)
+	m.SetQuestion(name, dns.TypeA) // dns.TypeA
+	updateAddressCache(m)
+}
+
+// TvproxySrv is the main exported method to run the dns server
 // It will forward requests we're not interested in, otherwise it'll
-// intercept for us and return the address of this server
+// intercept for us and return the external address of this server as
+// specified in the config
 func TvproxySrv(port string) {
 
 	// chanlock makes sure our global table doesn't hit race conditions
@@ -172,15 +190,9 @@ func TvproxySrv(port string) {
 
 	srv := &dns.Server{Addr: port, Net: "udp", PacketConn: pc, Handler: dns.HandlerFunc(interceptRequest)}
 	defer srv.Shutdown()
-	go refreshCache()
-	srv.ActivateAndServe()
-}
 
-// updateCacheByName updates the cache entry for the FQDN name
-func updateCacheByName(name string) {
-	name = dns.Fqdn(name)
-	fmt.Println("Updating entry for", name)
-	m := new(dns.Msg)
-	m.SetQuestion(name, dns.TypeA) // dns.TypeA
-	updateAddressCache(m)
+	// peridically update the cache
+	go refreshCache()
+	// start the dns server. Ctrl + C (etc) to kill
+	srv.ActivateAndServe()
 }

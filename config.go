@@ -13,6 +13,7 @@ type Configuration struct {
 	INTERCEPTS       []string
 }
 
+// Implements the configuration loading
 func (conf *Configuration) GetConfig() {
 
 	buf, err := ioutil.ReadFile("config.json")
@@ -20,7 +21,6 @@ func (conf *Configuration) GetConfig() {
 		fmt.Println("error with config:", err.Error())
 		return
 	}
-	//fmt.Println(buf)
 
 	err = json.Unmarshal(buf, &conf)
 	if err != nil {
