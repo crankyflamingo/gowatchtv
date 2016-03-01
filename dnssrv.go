@@ -5,6 +5,7 @@ import (
 	"net"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/miekg/dns"
@@ -12,7 +13,7 @@ import (
 
 var addressRegex = regexp.MustCompile("([\\d]{1,3}\\.[\\d]{1,3}\\.[\\d]{1,3}\\.[\\d]{1,3})$")
 var addressMap = map[string]string{}
-var chanlock = make(chan int, 1)
+var updateMutex = new(sync.Mutex)
 
 // updateAddressCache updates the dns map of real names to ip addresses
 // used to relay traffic to the intended destination.
@@ -44,18 +45,18 @@ func updateAddressCache(r *dns.Msg) {
 
 	if ip == "" {
 		fmt.Println("Cannot updated map, no IP found")
-		fmt.Println(u.String(), "\n")
+		fmt.Println(u.String())
 		return
 	}
 
-	<-chanlock
+	updateMutex.Lock()
 	// Update both with . at the end and without
 	for _, name := range names {
 		addressMap[strings.ToLower(name)] = ip
 		addressMap[strings.ToLower(name[:len(name)-1])] = ip
 		fmt.Println("Updated address map with ", name, ip)
 	}
-	chanlock <- 1
+	updateMutex.Unlock()
 }
 
 // refreshCache periodically runs and updates DNS entries for all names in the cache (since they often
@@ -146,6 +147,7 @@ func interceptRequest(w dns.ResponseWriter, r *dns.Msg) {
 
 	// Hijack the response to point to us instead
 	if matchesCriteria(r.Question[0].Name) {
+		fmt.Println("Matches!", r.Question[0].Name)
 		if !(inAddressCache(r.Question[0].Name)) {
 			updateAddressCache(r)
 		}
@@ -153,7 +155,7 @@ func interceptRequest(w dns.ResponseWriter, r *dns.Msg) {
 
 		// Pass it upstream, return the answer
 	} else {
-		fmt.Println("Passing on ", r.Question[0].Name)
+		//fmt.Println("Passing on ", r.Question[0].Name)
 		m, err = upstreamLookup(r)
 		if err != nil {
 			fmt.Println("Error when passing request through upstream - network problem?")
@@ -177,8 +179,6 @@ func updateCacheByName(name string) {
 // specified in the config
 func TvproxySrv(port string) {
 
-	// chanlock makes sure our global table doesn't hit race conditions
-	chanlock <- 1
 	pc, err := net.ListenPacket("udp", port)
 	if err != nil {
 		fmt.Printf("Cannot listen on address %s", port)
@@ -191,7 +191,7 @@ func TvproxySrv(port string) {
 	defer srv.Shutdown()
 
 	// peridically update the cache
-	go refreshCache()
+	//go refreshCache()
 	// start the dns server. Ctrl + C (etc) to kill
 	srv.ActivateAndServe()
 }

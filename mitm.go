@@ -22,17 +22,17 @@ var cacheTrimRunning = false
 var clientCache = map[string]*TemporalCache{}
 
 // shuttleData moves data back and forth between client and intended destination
-func shuttleData(src, dst net.Conn) {
+func shuttleData(src, dst net.Conn, wg sync.WaitGroup) {
 	// TODO: There is likely a sexier way to do this using channels and the like
-	defer src.Close()
-
-	buf := make([]byte, 1024)
+	buf := make([]byte, 2048)
+	defer wg.Done()
 	for {
 		rlen, err := src.Read(buf)
 		if err == nil && rlen > 0 {
-			dst.Write(buf[:rlen])
+			_, err = dst.Write(buf[:rlen])
 		} else {
-			break
+			//fmt.Printf("Shuttle data complete to %s <-> %s\n", src.RemoteAddr().String(), dst.RemoteAddr().String())
+			return
 		}
 	}
 }
@@ -95,15 +95,16 @@ func extractHostFromRequest(data *string) (host string) {
 
 func handleConnection(src net.Conn, port string) {
 
+	defer src.Close()
+
 	fmt.Println("\nConnection on port", port)
 
-	buf := make([]byte, 512)
+	buf := make([]byte, 2048)
 	host := ""
 	ip := ""
 
 	rlen, err := src.Read(buf)
 	if err != nil {
-		src.Close()
 		return
 	}
 	data := string(buf)
@@ -121,8 +122,7 @@ func handleConnection(src net.Conn, port string) {
 		ip = getCachedIp(host)
 	} else if !matchesCriteria(data) {
 		// otherwise it's an unwanted connection
-		fmt.Printf("Request to unknown host dropping")
-		src.Close()
+		fmt.Printf("Request to unknown host %s, dropping", data[:20])
 		return
 	}
 
@@ -137,7 +137,6 @@ func handleConnection(src net.Conn, port string) {
 
 	if ip == "" {
 		fmt.Println("Unable to match incoming connection to known destination", host, src.RemoteAddr().String())
-		src.Close()
 		return
 	}
 
@@ -149,21 +148,27 @@ func handleConnection(src net.Conn, port string) {
 	dst, err := net.Dial("tcp", ip+port)
 	if err != nil {
 		fmt.Println("Unable to contact intended IP", host, src.RemoteAddr().String(), ip, err.Error())
-		src.Close()
 		return
 	}
+	defer dst.Close()
+
+	// using channels to send data to and fro
 
 	// send data that was originally meant for dest that we've already grabbed and molested
 	_, err = dst.Write(buf[:rlen])
 	if err != nil {
 		fmt.Println("Unable to write data to intended IP", ip, port, err.Error())
-		src.Close()
-		dst.Close()
 		return
 	}
 
-	go shuttleData(dst, src)
-	go shuttleData(src, dst)
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go shuttleData(dst, src, wg)
+	go shuttleData(src, dst, wg)
+
+	// defer close of connections after traffic shuttling complete
+	wg.Wait()
 }
 
 // MitmServer listens on a given port and shuttles traffic (usually HTTP/HTTPS from client to intended destination)
@@ -177,10 +182,10 @@ func MitmServer(port string) {
 	}
 
 	// only want the one thread checking the cache, but we'll run at least two instances of MitmServer
-	if !cacheTrimRunning {
-		cacheTrimRunning = true
-		go trimClientCache()
-	}
+	//if !cacheTrimRunning {
+	//	cacheTrimRunning = true
+	//	go trimClientCache()
+	//}
 
 	fmt.Println("MITM server listening on", port, "for connections")
 	for {
