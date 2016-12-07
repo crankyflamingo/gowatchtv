@@ -82,12 +82,13 @@ func upstreamLookup(r *dns.Msg) (u *dns.Msg, err error) {
 	c, err := net.Dial("udp", config.UPSTREAM_DNS)
 	if err != nil {
 		fmt.Println("Can't connect to upstream", err.Error())
-		return
+		return r, err
 	}
 	defer c.Close()
 
 	co := &dns.Conn{Conn: c}
-	if err = co.WriteMsg(r); err != nil {
+	err = co.WriteMsg(r)
+	if err != nil {
 		fmt.Println("Can't write to upstream", err.Error())
 		return r, err
 	}
@@ -105,7 +106,7 @@ func matchesCriteria(name string) bool {
 	return false
 }
 
-// hijackResponse retuns a modified version on the input dns.Msg with the A record modified
+// hijackResponse returns a modified version on the input dns.Msg with the A record modified
 // to point to our server
 func hijackResponse(r *dns.Msg) (m *dns.Msg) {
 	m = new(dns.Msg)
@@ -138,7 +139,8 @@ func getCachedIp(name string) string {
 // interceptRequest gets called upon each DNS request, and we determine
 // whether we want to deal with it or not
 func interceptRequest(w dns.ResponseWriter, r *dns.Msg) {
-	m := r
+	m := r.Copy()
+
 	err := error(nil)
 	defer w.Close()
 	if len(r.Question) < 1 {
@@ -159,6 +161,7 @@ func interceptRequest(w dns.ResponseWriter, r *dns.Msg) {
 		m, err = upstreamLookup(r)
 		if err != nil {
 			fmt.Println("Error when passing request through upstream - network problem?")
+			// in this instance, our response (m) has no answer
 		}
 	}
 	w.WriteMsg(m)
@@ -190,7 +193,7 @@ func TvproxySrv(port string) {
 	srv := &dns.Server{Addr: port, Net: "udp", PacketConn: pc, Handler: dns.HandlerFunc(interceptRequest)}
 	defer srv.Shutdown()
 
-	// peridically update the cache
+	// periodically update the cache
 	//go refreshCache()
 	// start the dns server. Ctrl + C (etc) to kill
 	srv.ActivateAndServe()

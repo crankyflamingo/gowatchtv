@@ -17,12 +17,12 @@ type TemporalCache struct {
 	dest string
 }
 
-var mutex = new(sync.Mutex)
+var cacheMutex = new(sync.Mutex)
 var cacheTrimRunning = false
 var clientCache = map[string]*TemporalCache{}
 
 // shuttleData moves data back and forth between client and intended destination
-func shuttleData(src, dst net.Conn, wg sync.WaitGroup) {
+func shuttleData(src, dst net.Conn, wg *sync.WaitGroup) {
 	// TODO: There is likely a sexier way to do this using channels and the like
 	buf := make([]byte, 2048)
 	defer wg.Done()
@@ -48,9 +48,9 @@ func updateClientCache(client string, ip string) {
 	temp := new(TemporalCache)
 	temp.dest = ip
 	temp.set = time.Now()
-	mutex.Lock()
+	cacheMutex.Lock()
 	clientCache[client] = temp
-	mutex.Unlock()
+	cacheMutex.Unlock()
 }
 
 func trimClientCache() {
@@ -58,13 +58,13 @@ func trimClientCache() {
 		time.Sleep(30 * time.Minute)
 		fmt.Println("Flushing old cached client entries (", len(clientCache), " total )")
 
-		mutex.Lock()
+		cacheMutex.Lock()
 		for client, temp := range clientCache {
 			if time.Since(temp.set) > cacheExpiry {
 				delete(clientCache, client)
 			}
 		}
-		mutex.Unlock()
+		cacheMutex.Unlock()
 	}
 }
 
@@ -161,7 +161,7 @@ func handleConnection(src net.Conn, port string) {
 		return
 	}
 
-	var wg sync.WaitGroup
+	wg := new(sync.WaitGroup)
 	wg.Add(2)
 
 	go shuttleData(dst, src, wg)
